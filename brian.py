@@ -26,15 +26,15 @@ def brian(plugin):
 				ours = c['spendable_msatoshi']
 				theirs = c['receivable_msatoshi']
 
-				mid = ((ours + theirs) / 2)
+				mid = int((ours + theirs) / 2)
 				quarter = mid / 2
 				high_thresh = mid + quarter
 				low_thresh = mid - quarter
 
 				if (ours >= high_thresh):
-					needs_drain[scid] = int(ours - mid)
+					needs_drain[scid] = ours - mid
 				elif (ours <= low_thresh):
-					needs_fill[scid] = int(mid - ours)
+					needs_fill[scid] = mid - ours
 
 	for scid_f in needs_fill:
 		for scid_d in needs_drain:
