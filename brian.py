@@ -15,7 +15,9 @@ def brian(plugin):
 	""" Function Descr Here """
 
 	reply = {}
-	needs_balance = {}
+	## needs_balance = {}
+	needs_drain = {}
+	needs_fill = {}
 
 	peers = plugin.rpc.listpeers()
 	for p in peers['peers']:
@@ -30,49 +32,37 @@ def brian(plugin):
 				high_thresh = mid + quarter
 				low_thresh = mid - quarter
 
-				if (ours >= high_thresh or ours <= low_thresh):
-					needs_balance[scid] = mid - ours
-					## Just for testing. REMOVE ME.
-					if scid == "715322x2292x1":
-						needs_balance[scid] = abs(needs_balance[scid])
+				if (ours >= high_thresh):
+					needs_drain[scid] = int(ours - mid)
+				elif (ours <= low_thresh):
+					needs_fill[scid] = int(mid - ours)
 
-	for scid in needs_balance:
-		if needs_balance[scid] == 0:
-			continue
+	## Just for testing. REMOVE ME.
+	needs_fill['715322x2292x1'] = needs_drain['715322x2292x1']
+	del needs_drain['715322x2292x1']
 
-		for scid2 in needs_balance:
-			if needs_balance[scid2] == 0:
+	for scid_f in needs_fill:
+		for scid_d in needs_drain:
+
+			if (needs_fill[scid_f] == 0):
+				break
+
+			if (needs_drain[scid_d] == 0):
 				continue
 
-			sender = ""
-			receiver = ""
-			amount = 0
+			plugin.log(f"Proc {scid_d} = {needs_drain[scid_d]} and {scid_f} = {needs_fill[scid_f]}")
 
-			if (needs_balance[scid] > 0 and needs_balance[scid2] < 0):
-				if (abs(needs_balance[scid]) > abs(needs_balance[scid2])):
-					amount = abs(needs_balance[scid2])
-					plugin.log(f"A Send {amount} from {scid2} to {scid}")
-					needs_balance[scid] -= amount
-					needs_balance[scid2] = 0
-				else:
-					amount = abs(needs_balance[scid])
-					plugin.log(f"B Send {amount} from {scid2} to {scid}")
-					needs_balance[scid2] += amount
-					needs_balance[scid] = 0
-			elif (needs_balance[scid] < 0 and needs_balance[scid2] > 0):
-				if (abs(needs_balance[scid]) > abs(needs_balance[scid2])):
-					amount = abs(needs_balance[scid2])
-					plugin.log(f"C Send {amount} from {scid} to {scid2}")
-					needs_balance[scid] += amount
-					needs_balance[scid2] = 0
-				else:
-					amount = abs(needs_balance[scid])
-					plugin.log(f"D Send {amount} from {scid} to {scid2}")
-					needs_balance[scid2] -= amount
-					needs_balance[scid] = 0
+			if (needs_fill[scid_f] > needs_drain[scid_d]):
+				amount = needs_drain[scid_d]
+			else:
+				amount = needs_fill[scid_f]
 
+			plugin.log(f"Send {amount} from {scid_d} to {scid_f}")
 
-	return needs_balance
+			needs_drain[scid_d] -= amount
+			needs_fill[scid_f] -= amount
+
+	return reply
 
 
 @plugin.init()
