@@ -15,45 +15,54 @@ def brian(plugin):
 	""" Function Descr Here """
 
 	reply = {}
-	needs_drain = {}
-	needs_fill = {}
 
 	peers = plugin.rpc.listpeers()
+
+	if ('peers' not in peers):
+		return reply
+
 	for p in peers['peers']:
+
+		if ('channels' not in p):
+			continue
+
 		for c in p['channels']:
+
 			if 'short_channel_id' in c and c['state'] == 'CHANNELD_NORMAL':
 				scid = c['short_channel_id']
 				ours = c['spendable_msatoshi']
 				theirs = c['receivable_msatoshi']
 
-				mid = int((ours + theirs) / 2)
-				quarter = mid / 2
-				high_thresh = mid + quarter
-				low_thresh = mid - quarter
+				our_pct = int((ours / (ours + theirs)) * 100)
 
-				if (ours >= high_thresh):
-					needs_drain[scid] = ours - mid
-				elif (ours <= low_thresh):
-					needs_fill[scid] = mid - ours
+				base = c['fee_base_msat']
+				ppm = c['fee_proportional_millionths']
 
-	for scid_f in needs_fill:
-		for scid_d in needs_drain:
+				if (our_pct >= 95):
+					ppm = 0
+				elif (our_pct >= 85):
+					ppm = 1
+				elif (our_pct >= 75):
+					ppm = 2
+				elif (our_pct >= 25):
+					ppm = 5
+				elif (our_pct >= 15):
+					ppm = 10
+				elif (our_pct >= 5):
+					ppm = 11
+				else:
+					ppm = 12
 
-			if (needs_fill[scid_f] == 0):
-				break
+				if (base != c['fee_base_msat'] or ppm != c['fee_proportional_millionths']):
 
-			if (needs_drain[scid_d] == 0):
-				continue
+					plugin.rpc.setchannelfee(scid, base, ppm)
 
-			if (needs_fill[scid_f] > needs_drain[scid_d]):
-				amount = needs_drain[scid_d]
-			else:
-				amount = needs_fill[scid_f]
-
-			plugin.log(f"Send {amount} from {scid_d} to {scid_f}")
-
-			needs_drain[scid_d] -= amount
-			needs_fill[scid_f] -= amount
+					reply[scid] = {}
+					reply[scid]['ours'] = ours
+					reply[scid]['theirs'] = theirs
+					reply[scid]['our_pct'] = our_pct
+					reply[scid]['base'] = base
+					reply[scid]['ppm'] = ppm
 
 	return reply
 
