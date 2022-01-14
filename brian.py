@@ -27,6 +27,10 @@ def brian(plugin):
 	## Database Checks
 	#####################
 
+	# https://www.sqlite.org/datatype3.html
+	# https://www.sqlite.org/cli.html
+	# https://bcen.cdmana.com/sqlite/sqlite-python.html
+
 	# Make sure tables exist.
 
 	row = db.execute("select count(*) from sqlite_master where type = 'table' and name = 'channels'").fetchone()
@@ -34,7 +38,7 @@ def brian(plugin):
 		db.execute("create table channels(id INTEGER primary key autoincrement, short_channel_id text, msatoshi_total int)")
 	row = db.execute("select count(*) from sqlite_master where type = 'table' and name = 'channel_data'").fetchone()
 	if (not row[0]):
-		db.execute("create table channel_data(id INTEGER primary key autoincrement, channel_id int, time datetime default current_timestamp, connected bool, state text, spendable_msatoshi int, receivable_msatoshi int, fee_base_msat int, fee_proportional_millionths int, in_payments_offered int, in_payments_fulfilled int, in_msatoshi_fulfilled int, out_payments_offered int, out_payments_fulfilled int, out_msatoshi_fulfilled int)")
+		db.execute("create table channel_data(id INTEGER primary key autoincrement, channel_id int, time datetime default current_timestamp, connected bool, state text, spendable_msatoshi int, receivable_msatoshi int, fee_base_msat int, fee_proportional_millionths int, in_payments_offered int, in_payments_fulfilled int, in_msatoshi_fulfilled int, out_payments_offered int, out_payments_fulfilled int, out_msatoshi_fulfilled int, fees_collected int)")
 
 	# Populate channels table with any new channels
 
@@ -80,9 +84,13 @@ def brian(plugin):
 
 			fee_base_msat = fee_base_msat.millisatoshis
 
-			db.execute("insert into channel_data (channel_id, connected, state, spendable_msatoshi, receivable_msatoshi, fee_base_msat, fee_proportional_millionths, in_payments_offered, in_payments_fulfilled, in_msatoshi_fulfilled, out_payments_offered, out_payments_fulfilled, out_msatoshi_fulfilled) values (?,?,?,?,?,?,?,?,?,?,?,?,?)", [channel_id, conn, state, spendable_msatoshi, receivable_msatoshi, fee_base_msat, fee_proportional_millionths, in_payments_offered, in_payments_fulfilled, in_msatoshi_fulfilled, out_payments_offered, out_payments_fulfilled, out_msatoshi_fulfilled])
+			fees_collected = 0
+			forwards = plugin.rpc.listforwards(status="settled", out_channel=scid)
+			for f in forwards['forwards']:
+				fees_collected += f['fee']
 
-	db.commit()
+			db.execute("insert into channel_data (channel_id, connected, state, spendable_msatoshi, receivable_msatoshi, fee_base_msat, fee_proportional_millionths, in_payments_offered, in_payments_fulfilled, in_msatoshi_fulfilled, out_payments_offered, out_payments_fulfilled, out_msatoshi_fulfilled, fees_collected) values (?,?,?,?,?,?,?,?,?,?,?,?,?, ?)", [channel_id, conn, state, spendable_msatoshi, receivable_msatoshi, fee_base_msat, fee_proportional_millionths, in_payments_offered, in_payments_fulfilled, in_msatoshi_fulfilled, out_payments_offered, out_payments_fulfilled, out_msatoshi_fulfilled, fees_collected])
+			db.commit()
 
 
 	#####################
@@ -119,13 +127,13 @@ def brian(plugin):
 					ppm = 5
 					base = 1000
 				elif (our_pct >= 15):
-					ppm = 10
+					ppm = 6
 					base = 1000
 				elif (our_pct >= 5):
-					ppm = 11
+					ppm = 7
 					base = 1000
 				else:
-					ppm = 12
+					ppm = 8
 					base = 1000
 
 				if (base != c['fee_base_msat'] or ppm != c['fee_proportional_millionths']):
