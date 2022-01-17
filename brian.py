@@ -38,7 +38,7 @@ def brian(plugin):
 		db.execute("create table channels(id INTEGER primary key autoincrement, short_channel_id text, msatoshi_total int)")
 	row = db.execute("select count(*) from sqlite_master where type = 'table' and name = 'channel_data'").fetchone()
 	if (not row[0]):
-		db.execute("create table channel_data(id INTEGER primary key autoincrement, channel_id int, time datetime default current_timestamp, connected bool, state text, spendable_msatoshi int, receivable_msatoshi int, fee_base_msat int, fee_proportional_millionths int, in_payments_offered int, in_payments_fulfilled int, in_msatoshi_fulfilled int, out_payments_offered int, out_payments_fulfilled int, out_msatoshi_fulfilled int, fees_collected int)")
+		db.execute("create table channel_data(id INTEGER primary key autoincrement, channel_id int, time datetime default current_timestamp, connected bool, state text, spendable_msatoshi int, receivable_msatoshi int, fee_base_msat int, fee_proportional_millionths int, in_payments_offered int, in_payments_fulfilled int, in_msatoshi_fulfilled int, out_payments_offered int, out_payments_fulfilled int, out_msatoshi_fulfilled int, fees_collected int, fees_assisted int)")
 
 	# Populate channels table with any new channels
 
@@ -89,7 +89,12 @@ def brian(plugin):
 			for f in forwards['forwards']:
 				fees_collected += f['fee']
 
-			db.execute("insert into channel_data (channel_id, connected, state, spendable_msatoshi, receivable_msatoshi, fee_base_msat, fee_proportional_millionths, in_payments_offered, in_payments_fulfilled, in_msatoshi_fulfilled, out_payments_offered, out_payments_fulfilled, out_msatoshi_fulfilled, fees_collected) values (?,?,?,?,?,?,?,?,?,?,?,?,?, ?)", [channel_id, conn, state, spendable_msatoshi, receivable_msatoshi, fee_base_msat, fee_proportional_millionths, in_payments_offered, in_payments_fulfilled, in_msatoshi_fulfilled, out_payments_offered, out_payments_fulfilled, out_msatoshi_fulfilled, fees_collected])
+			fees_assisted = 0
+			forwards = plugin.rpc.listforwards(status="settled", in_channel=scid)
+			for f in forwards['forwards']:
+				fees_assisted += f['fee']
+
+			db.execute("insert into channel_data (channel_id, connected, state, spendable_msatoshi, receivable_msatoshi, fee_base_msat, fee_proportional_millionths, in_payments_offered, in_payments_fulfilled, in_msatoshi_fulfilled, out_payments_offered, out_payments_fulfilled, out_msatoshi_fulfilled, fees_collected, fees_assisted) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [channel_id, conn, state, spendable_msatoshi, receivable_msatoshi, fee_base_msat, fee_proportional_millionths, in_payments_offered, in_payments_fulfilled, in_msatoshi_fulfilled, out_payments_offered, out_payments_fulfilled, out_msatoshi_fulfilled, fees_collected, fees_assisted])
 			db.commit()
 
 
