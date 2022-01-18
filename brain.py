@@ -170,8 +170,8 @@ def channels_balance():
 	# e.g. lightning-cli rebalance -k outgoing_scid=715327x2283x1 incoming_scid=715186x1965x1 msatoshi=1396708140 maxfeepercent=0.05 retry_for=300
 	return None
 
-@plugin.method("brian")
-def brian(plugin):
+@plugin.method("brain")
+def brain(plugin):
 
 	""" Function Descr Here """
 
@@ -191,8 +191,8 @@ def brian(plugin):
 	return reply
 	
 
-@plugin.method("briantest")
-def briantest(plugin):
+@plugin.method("braintest")
+def braintest(plugin):
 
 	""" Function Descr Here """
 
@@ -203,6 +203,6 @@ def briantest(plugin):
 
 @plugin.init()
 def init(options, configuration, plugin):
-    plugin.log("Plugin brian.py initialized")
+    plugin.log("Plugin brain.py initialized")
 
 plugin.run()
