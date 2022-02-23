@@ -13,7 +13,7 @@ plugin = pyln.client.Plugin()
 def database_check_tables(db):
 	row = db.execute("select count(*) from sqlite_master where type = 'table' and name = 'channels'").fetchone()
 	if (not row[0]):
-		db.execute("create table channels(id INTEGER primary key autoincrement, short_channel_id text, msatoshi_total int)")
+		db.execute("create table channels(id INTEGER primary key autoincrement, short_channel_id text, msatoshi_total int, flags int)")
 	row = db.execute("select count(*) from sqlite_master where type = 'table' and name = 'channel_data'").fetchone()
 	if (not row[0]):
 		db.execute("create table channel_data(id INTEGER primary key autoincrement, channel_id int, time datetime default current_timestamp, connected bool, state text, spendable_msatoshi int, receivable_msatoshi int, fee_base_msat int, fee_proportional_millionths int, in_payments_offered int, in_payments_fulfilled int, in_msatoshi_fulfilled int, out_payments_offered int, out_payments_fulfilled int, out_msatoshi_fulfilled int, fees_collected int, fees_assisted int)")
@@ -29,7 +29,7 @@ def database_check_channels(db, peers):
 			mtot = c['msatoshi_total']
 			row = db.execute("SELECT COUNT(*) FROM channels where short_channel_id = ?", [scid]).fetchone()
 			if (not row[0]):
-				db.execute("insert into channels (short_channel_id, msatoshi_total) values (?,?)", [scid, mtot])
+				db.execute("insert into channels (short_channel_id, msatoshi_total, flags) values (?,?,?)", [scid, mtot, 0])
 				db.commit()
 
 def database_get_data(db, peers):
@@ -72,8 +72,140 @@ def database_get_data(db, peers):
 			db.execute("insert into channel_data (channel_id, connected, state, spendable_msatoshi, receivable_msatoshi, fee_base_msat, fee_proportional_millionths, in_payments_offered, in_payments_fulfilled, in_msatoshi_fulfilled, out_payments_offered, out_payments_fulfilled, out_msatoshi_fulfilled, fees_collected, fees_assisted) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [channel_id, conn, state, spendable_msatoshi, receivable_msatoshi, fee_base_msat, fee_proportional_millionths, in_payments_offered, in_payments_fulfilled, in_msatoshi_fulfilled, out_payments_offered, out_payments_fulfilled, out_msatoshi_fulfilled, fees_collected, fees_assisted])
 			db.commit()
 
-def fees_adjust(peers):
+def fees_adjust(db, config, peers):
 	reply = {}
+
+	for p in peers['peers']:
+
+		if ('channels' not in p):
+			continue
+
+		for c in p['channels']:
+
+			if 'short_channel_id' in c and c['state'] == 'CHANNELD_NORMAL':
+				scid = c['short_channel_id']
+				ours = c['spendable_msatoshi']
+				theirs = c['receivable_msatoshi']
+				ppm = c['fee_proportional_millionths']
+				base = c['fee_base_msat'].millisatoshis
+
+				our_pct = int((ours / (ours + theirs)) * 100)
+
+				row = db.execute("SELECT flags FROM channels where short_channel_id = ?", [scid]).fetchone()
+				flags = row[0]
+				is_filling = flags & 0x00000001
+
+				#####################
+				# Adjusting ppm Fee
+				#####################
+
+				"""
+
+				ppm = 3
+				ppm_min = 3
+				ppm_multiplier = 1.04
+				ppm_reducer = 0.95
+				opf_day_goal = 1
+
+				# Percentage Adjustment
+
+				ppm_pct = ppm
+				for i in range(100 - our_pct):
+					ppm_pct *= ppm_multiplier
+
+				ppm = ppm_pct
+
+				# Payments Fulfilled Daily Goal Adjustment
+
+				ppm_opf = ppm
+
+				row = db.execute("SELECT id FROM channels where short_channel_id = ?", [scid]).fetchone()
+				channel_id = row[0]
+				row = db.execute("select out_payments_fulfilled from channel_data where channel_id = ? order by id desc limit 1", [channel_id]).fetchone()
+				opf_total = row[0]
+				row = db.execute("select out_payments_fulfilled from channel_data where channel_id = ? and time < datetime('now', '-1 day') order by id desc limit 1", [channel_id]).fetchone()
+				opf_day = opf_total - row[0]
+
+				if (opf_day < opf_day_goal):
+					if (opf_total > 0):
+						row = db.execute("select JULIANDAY('now') - JULIANDAY(time) as diff from channel_data where channel_id = ? and out_payments_fulfilled < ? order by id desc limit 1", [channel_id, opf_total]).fetchone()
+						if (row == None):
+							row = db.execute("select JULIANDAY('now') - JULIANDAY(time) as diff from channel_data where channel_id = ? order by id asc limit 1", [channel_id]).fetchone()
+					else:
+						row = db.execute("select JULIANDAY('now') - JULIANDAY(time) as diff from channel_data where channel_id = ? order by id asc limit 1", [channel_id]).fetchone()
+					opf_days_since_last = int(row[0])
+					for i in range(opf_days_since_last):
+						ppm_opf *= ppm_reducer
+				if (opf_day > opf_day_goal):
+					opf_day_extra = opf_day - opf_day_goal
+					for i in range(opf_day_extra):
+						ppm_opf *= ppm_multiplier
+
+				ppm = ppm_opf
+
+				# Get Integer Value
+
+				ppm = int(ppm)
+
+				# Check Minimum
+
+				if (ppm < ppm_min):
+					ppm = ppm_min
+
+				# Set To Zero If We Need To Rebalance
+
+				if (our_pct >= 95):
+					ppm = 0
+
+				"""
+
+				#####################
+				# Adjusting Fees
+				#####################
+
+				if (is_filling == 1 and our_pct >= 50):
+					base = 0
+					ppm = 0
+				elif (is_filling == 0 and our_pct >= 90):
+					base = 0
+					ppm = 0
+					flags = flags | 0x00000001
+					db.execute("UPDATE channels SET flags = ? where short_channel_id = ?", [flags, scid])
+					db.commit()
+				else:
+					if (is_filling == 1):
+						flags = flags - 0x00000001
+						db.execute("UPDATE channels SET flags = ? where short_channel_id = ?", [flags, scid])
+						db.commit()
+					base = config['fee-base']
+					ppm = config['fee-per-satoshi']
+
+				#####################
+				# Set Channel Fee
+				#####################
+
+				if (base != c['fee_base_msat'].millisatoshis or ppm != c['fee_proportional_millionths']):
+
+					plugin.rpc.setchannelfee(scid, base, ppm)
+
+					reply[scid] = {}
+					reply[scid]['ours'] = ours
+					reply[scid]['theirs'] = theirs
+					reply[scid]['our_pct'] = our_pct
+					reply[scid]['base_old'] = c['fee_base_msat'].millisatoshis
+					reply[scid]['base_new'] = base
+					reply[scid]['ppm_old'] = c['fee_proportional_millionths']
+					reply[scid]['ppm_new'] = ppm
+					reply[scid]['is_filling'] = is_filling
+
+	return reply
+
+def channels_balance(config, peers):
+
+	fill = {}
+	drain = {}
+	fee_per_satoshi = config['fee-per-satoshi']
+	rebalance_maxfeepercent = (fee_per_satoshi / 2) * 0.0001
 
 	for p in peers['peers']:
 
@@ -89,86 +221,25 @@ def fees_adjust(peers):
 
 				our_pct = int((ours / (ours + theirs)) * 100)
 
-				base = c['fee_base_msat']
-				ppm = c['fee_proportional_millionths']
-
 				if (our_pct >= 95):
-					ppm = 0
-					base = 0
-				elif (our_pct >= 90):
-					ppm = 5
-					base = 100
-				elif (our_pct >= 85):
-					ppm = 37
-					base = 200
-				elif (our_pct >= 80):
-					ppm = 69
-					base = 300
-				elif (our_pct >= 75):
-					ppm = 85
-					base = 500
-				elif (our_pct >= 70):
-					ppm = 93
-					base = 700
-				elif (our_pct >= 65):
-					ppm = 97
-					base = 1000
-				elif (our_pct >= 60):
-					ppm = 99
-					base = 1000
-				elif (our_pct >= 55):
-					ppm = 100
-					base = 1000
-				elif (our_pct >= 50):
-					ppm = 100
-					base = 1000
-				elif (our_pct >= 45):
-					ppm = 101
-					base = 1000
-				elif (our_pct >= 40):
-					ppm = 103
-					base = 1000
-				elif (our_pct >= 35):
-					ppm = 107
-					base = 1000
-				elif (our_pct >= 30):
-					ppm = 115
-					base = 1000
-				elif (our_pct >= 25):
-					ppm = 131
-					base = 1000
-				elif (our_pct >= 20):
-					ppm = 163
-					base = 1200
-				elif (our_pct >= 15):
-					ppm = 227
-					base = 1400
-				elif (our_pct >= 10):
-					ppm = 355
-					base = 1600
-				elif (our_pct >= 5):
-					ppm = 611
-					base = 1800
-				else:
-					ppm = 1123
-					base = 2000
+                                        drain[scid] = ours - ((ours + theirs) / 2)
+				elif (our_pct <= 5):
+                                        fill[scid] = ((ours + theirs) / 2) - ours
 
-				if (base != c['fee_base_msat'] or ppm != c['fee_proportional_millionths']):
+	fill = dict(sorted(fill.items(), key=lambda x:x[1], reverse=True))
+	drain = dict(sorted(drain.items(), key=lambda x:x[1], reverse=True))
 
-					plugin.rpc.setchannelfee(scid, base, ppm)
+	#for f in reply['fill']:
+	#	for d in reply['drain']:
 
-					reply[scid] = {}
-					reply[scid]['ours'] = ours
-					reply[scid]['theirs'] = theirs
-					reply[scid]['our_pct'] = our_pct
-					reply[scid]['base'] = base
-					reply[scid]['ppm'] = ppm
+	reply = {}
+	reply['fill'] = fill
+	reply['drain'] = drain
+	reply['fee_per_satoshi'] = fee_per_satoshi
+	reply['rebalance_maxfeepercent'] = rebalance_maxfeepercent
 
+	# e.g. lightning-cli rebalance -k outgoing_scid=715327x2283x1 incoming_scid=715186x1965x1 msatoshi=1396708140 maxfeepercent=0.001 retry_for=300
 	return reply
-
-def channels_balance():
-	# e.g. lightning-cli rebalance -k outgoing_scid=715327x2283x1 incoming_scid=715186x1965x1 msatoshi=1396708140 maxfeepercent=0.05 retry_for=300
-	return None
 
 @plugin.method("brain")
 def brain(plugin):
@@ -178,6 +249,7 @@ def brain(plugin):
 	reply = {}
 	db = sqlite3.connect("/home/brian/git/plugin-c-lightning/data.db")
 	peers = plugin.rpc.listpeers()
+	config = plugin.rpc.listconfigs()
 
 	if ('peers' not in peers):
 		return reply
@@ -185,8 +257,8 @@ def brain(plugin):
 	database_check_tables(db)
 	database_check_channels(db, peers)
 	database_get_data(db, peers)
-	reply = fees_adjust(peers)
-	channels_balance()
+	reply = fees_adjust(db, config, peers)
+	#reply = channels_balance(peers)
 
 	return reply
 	
@@ -197,7 +269,13 @@ def braintest(plugin):
 	""" Function Descr Here """
 
 	reply = {}
-	reply['test'] = 'test'
+
+	db = sqlite3.connect("/home/brian/git/plugin-c-lightning/data.db")
+	peers = plugin.rpc.listpeers()
+	config = plugin.rpc.listconfigs()
+	
+	reply = channels_balance(config, peers)
+
 	return reply
 
 
