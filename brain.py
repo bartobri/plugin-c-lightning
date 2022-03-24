@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.6
 
 """
 Plugin Descr Here
@@ -7,6 +7,7 @@ Plugin Descr Here
 import pyln.client
 import json
 import sqlite3
+import random
 
 plugin = pyln.client.Plugin()
 
@@ -31,6 +32,10 @@ def database_check_channels(db, peers):
 			if (not row[0]):
 				db.execute("insert into channels (short_channel_id, msatoshi_total, flags) values (?,?,?)", [scid, mtot, 0])
 				db.commit()
+
+def database_trim_data(db):
+	db.execute("delete from channel_data where time <= datetime('now', '-7 day')")
+	db.commit()
 
 def database_get_data(db, peers):
 	for p in peers['peers']:
@@ -163,6 +168,17 @@ def fees_adjust(db, config, peers):
 				# Adjusting Fees
 				#####################
 
+				# Turning off fee adjustments for now.
+				# And turning all is_filling flags off.
+				ppm = config['fee-per-satoshi']
+				base = config['fee-base']
+				if (is_filling == 1):
+					flags = flags - 0x00000001
+					db.execute("UPDATE channels SET flags = ? where short_channel_id = ?", [flags, scid])
+					db.commit()
+
+				"""
+
 				if (is_filling == 1 and our_pct >= 50):
 					base = 0
 					ppm = 0
@@ -179,6 +195,8 @@ def fees_adjust(db, config, peers):
 						db.commit()
 					base = config['fee-base']
 					ppm = config['fee-per-satoshi']
+
+				"""
 
 				#####################
 				# Set Channel Fee
@@ -204,8 +222,15 @@ def channels_balance(config, peers):
 
 	fill = {}
 	drain = {}
-	fee_per_satoshi = config['fee-per-satoshi']
-	rebalance_maxfeepercent = (fee_per_satoshi / 2) * 0.0001
+
+	# 100 sats per million = 0.01
+	# 50 sats per million = 0.005
+	# 25 sats per million = 0.0025
+	#fee_per_satoshi = config['fee-per-satoshi']
+	#rebalance_maxfeepercent = (fee_per_satoshi / 2) * 0.0001
+
+	rebalance_maxfeepercent = 0.025
+	rebalance_msatoshi = 50000000
 
 	for p in peers['peers']:
 
@@ -221,24 +246,60 @@ def channels_balance(config, peers):
 
 				our_pct = int((ours / (ours + theirs)) * 100)
 
-				if (our_pct >= 95):
-                                        drain[scid] = ours - ((ours + theirs) / 2)
-				elif (our_pct <= 5):
-                                        fill[scid] = ((ours + theirs) / 2) - ours
+				if (our_pct >= 75):
+					amt = ours - ((ours + theirs) / 2)
+					if (amt >= rebalance_msatoshi):
+						drain[scid] = amt
+				elif (our_pct <= 25):
+					amt = ((ours + theirs) / 2) - ours
+					if (amt >= rebalance_msatoshi):
+						fill[scid] = ((ours + theirs) / 2) - ours
 
 	fill = dict(sorted(fill.items(), key=lambda x:x[1], reverse=True))
 	drain = dict(sorted(drain.items(), key=lambda x:x[1], reverse=True))
 
-	#for f in reply['fill']:
-	#	for d in reply['drain']:
+	bad_status = {}
+	while (len(list(fill)) > 0 and len(list(drain)) > 0):
+		fill_scid = random.choice(list(fill))
+		drain_scid = random.choice(list(drain))
+
+		if (fill[fill_scid] < rebalance_msatoshi):
+			fill.pop(fill_scid)
+			continue
+		if (drain[drain_scid] < rebalance_msatoshi):
+			drain.pop(drain_scid)
+			continue
+		if ((fill_scid in bad_status) and bad_status[fill_scid] >= 3):
+			fill.pop(fill_scid)
+			continue
+		if ((drain_scid in bad_status) and bad_status[drain_scid] >= 3):
+			drain.pop(drain_scid)
+			continue
+
+		plugin.log(f"REBALANCING {drain_scid} and {fill_scid}")
+		#fill[fill_scid] -= rebalance_msatoshi
+		#drain[drain_scid] -= rebalance_msatoshi
+
+		result = plugin.rpc.rebalance(outgoing_scid=drain_scid, incoming_scid=fill_scid, msatoshi=rebalance_msatoshi, maxfeepercent=rebalance_maxfeepercent, exemptfee=1)
+		if (result["status"] == "complete"):
+			plugin.log(f"REBALANCE SUCCESS")
+			fill[fill_scid] -= rebalance_msatoshi
+			drain[drain_scid] -= rebalance_msatoshi
+		else:
+			if (fill_scid in bad_status):
+				bad_status[fill_scid] += 1
+			else:
+				bad_status[fill_scid] = 1
+			if (drain_scid in bad_status):
+				bad_status[drain_scid] += 1
+			else:
+				bad_status[drain_scid] = 1
 
 	reply = {}
 	reply['fill'] = fill
 	reply['drain'] = drain
-	reply['fee_per_satoshi'] = fee_per_satoshi
-	reply['rebalance_maxfeepercent'] = rebalance_maxfeepercent
 
-	# e.g. lightning-cli rebalance -k outgoing_scid=715327x2283x1 incoming_scid=715186x1965x1 msatoshi=1396708140 maxfeepercent=0.001 retry_for=300
+	# e.g. lightning-cli rebalance -k outgoing_scid=715198x902x0 incoming_scid=715269x1146x1 msatoshi=50000000 maxfeepercent=0.02 exemptfee=1
 	return reply
 
 @plugin.method("brain")
@@ -256,8 +317,9 @@ def brain(plugin):
 
 	database_check_tables(db)
 	database_check_channels(db, peers)
+	database_trim_data(db)
 	database_get_data(db, peers)
-	reply = fees_adjust(db, config, peers)
+	#reply = fees_adjust(db, config, peers)
 	#reply = channels_balance(peers)
 
 	return reply
@@ -274,7 +336,7 @@ def braintest(plugin):
 	peers = plugin.rpc.listpeers()
 	config = plugin.rpc.listconfigs()
 	
-	reply = channels_balance(config, peers)
+	#reply = channels_balance(config, peers)
 
 	return reply
 
